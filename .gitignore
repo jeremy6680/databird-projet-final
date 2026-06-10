@@ -1,0 +1,48 @@
+# ── Secrets & config locaux ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.json.key
+keyfile.json
+service_account*.json
+gcp_credentials*.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── dbt ───────────────────────────────────────────────────────────────────────
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+dbt/.user.yml
+dbt/profiles.yml
+
+# ── Airflow ───────────────────────────────────────────────────────────────────
+logs/
+airflow.cfg
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt
+webserver_config.py
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
