@@ -13,7 +13,7 @@ with DAG(
     dag_id='dbt_run_pipeline',
     default_args=default_args,
     description='Exécuter un dbt run via BashOperator',
-    schedule_interval=None,  # Exécution manuelle uniquement
+    schedule=None,  # Exécution manuelle uniquement
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['dbt', 'bigquery']
