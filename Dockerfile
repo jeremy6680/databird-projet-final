@@ -13,3 +13,6 @@ COPY dbt/ /opt/airflow/dbt/
 # Étape 4 : Installer les dépendances Airflow additionnelles
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# CMD personnalisé
+CMD ["bash", "-c", "dbt deps --profiles-dir /home/airflow/.dbt && airflow standalone"]
