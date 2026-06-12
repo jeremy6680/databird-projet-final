@@ -1,6 +1,11 @@
+from functools import partial
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
+
+from dbt_monitor import capture_run_results, send_pipeline_report
 from slack_callbacks import on_failure_slack_alert
 
 default_args = {
@@ -17,16 +22,21 @@ with DAG(
     dag_id='ex6_full_dbt_pipeline',
     default_args=default_args,
     description='Pipeline complet dbt : staging -> intermediate -> mart -> docs',
-    schedule='@daily',  # Planification quotidienne
+    schedule='@daily',
     start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=['dbt', 'orchestration']
 ) as dag:
 
-    # RUN + TEST Staging
+    # RUN + MONITOR + TEST Staging
     run_staging = BashOperator(
         task_id='run_staging',
         bash_command="cd /opt/airflow/dbt && dbt run --select staging.bike_database --profiles-dir ./.dbt_profiles"
+    )
+
+    monitor_staging = PythonOperator(
+        task_id='monitor_staging',
+        python_callable=partial(capture_run_results, "staging"),
     )
 
     test_staging = BashOperator(
@@ -34,10 +44,15 @@ with DAG(
         bash_command="cd /opt/airflow/dbt && dbt test --select staging.bike_database --profiles-dir ./.dbt_profiles"
     )
 
-    # RUN + TEST Intermediate
+    # RUN + MONITOR + TEST Intermediate
     run_intermediate = BashOperator(
         task_id='run_intermediate',
         bash_command="cd /opt/airflow/dbt && dbt run --select intermediate.bike_database --profiles-dir ./.dbt_profiles"
+    )
+
+    monitor_intermediate = PythonOperator(
+        task_id='monitor_intermediate',
+        python_callable=partial(capture_run_results, "intermediate"),
     )
 
     test_intermediate = BashOperator(
@@ -45,10 +60,15 @@ with DAG(
         bash_command="cd /opt/airflow/dbt && dbt test --select intermediate.bike_database --profiles-dir ./.dbt_profiles"
     )
 
-    # RUN + TEST Mart
+    # RUN + MONITOR + TEST Mart
     run_mart = BashOperator(
         task_id='run_mart',
         bash_command="cd /opt/airflow/dbt && dbt run --select mart.operations --profiles-dir ./.dbt_profiles"
+    )
+
+    monitor_mart = PythonOperator(
+        task_id='monitor_mart',
+        python_callable=partial(capture_run_results, "mart"),
     )
 
     test_mart = BashOperator(
@@ -56,11 +76,23 @@ with DAG(
         bash_command="cd /opt/airflow/dbt && dbt test --select mart.operations --profiles-dir ./.dbt_profiles"
     )
 
-    # Génération docs
+    # Generation docs
     generate_docs = BashOperator(
         task_id='generate_docs',
         bash_command="cd /opt/airflow/dbt && dbt docs generate --profiles-dir ./.dbt_profiles"
     )
 
-    # Définir l’ordre d’exécution
-    run_staging >> test_staging >> run_intermediate >> test_intermediate >> run_mart >> test_mart >> generate_docs
+    # Rapport final - s'execute meme en cas d'echec partiel
+    report_pipeline = PythonOperator(
+        task_id='report_pipeline',
+        python_callable=send_pipeline_report,
+        trigger_rule='all_done',
+    )
+
+    # Ordre d'execution
+    (
+        run_staging >> monitor_staging >> test_staging
+        >> run_intermediate >> monitor_intermediate >> test_intermediate
+        >> run_mart >> monitor_mart >> test_mart
+        >> generate_docs >> report_pipeline
+    )
