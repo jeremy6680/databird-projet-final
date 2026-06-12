@@ -1,2 +1,1 @@
 apache-airflow-providers-google>=10.0.0
-apache-airflow-providers-slack>=8.0.0
