@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-init
+  namespace: airflow
+spec:
+  # Si le job échoue, K8s réessaie jusqu'à 3 fois
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure   # Jobs ne peuvent pas utiliser "Always" (réservé aux Deployments)
+
+      # ── initContainer : attend que PostgreSQL soit prêt ──────────────────────
+      # C'est l'équivalent de "depends_on: postgres: condition: service_healthy"
+      # L'initContainer doit réussir (exit 0) avant que le container principal démarre.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres-svc -U airflow; do
+                echo "PostgreSQL pas encore prêt, on attend..."
+                sleep 2
+              done
+              echo "PostgreSQL est prêt !"
+
+      # ── Container principal : migration DB + création utilisateur ─────────────
+      containers:
+        - name: airflow-init
+          image: airflow-projet:latest
+          imagePullPolicy: Never   # Image locale dans minikube, ne pas chercher sur Docker Hub
+          command:
+            - bash
+            - -c
+            - |
+              echo "==> Migration de la base de données Airflow..."
+              airflow db migrate
+
+              echo "==> Création de l'utilisateur admin..."
+              airflow users create \
+                --username admin \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@example.com \
+                --password admin 2>/dev/null || echo "L'utilisateur admin existe déjà."
+
+              echo "==> Initialisation terminée."
+          # Charge TOUTES les vars du ConfigMap et du Secret comme variables d'environnement.
+          # C'est l'équivalent de "env_file: .env" + "environment:" dans docker-compose.
+          # Beaucoup plus propre que de lister chaque var individuellement.
+          envFrom:
+            - configMapRef:
+                name: airflow-config
+            - secretRef:
+                name: airflow-secrets

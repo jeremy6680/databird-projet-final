@@ -6,11 +6,17 @@ USER airflow
 RUN pip install --no-cache-dir dbt-bigquery==1.7.5
 
 # Étape 3 : Copier le code Airflow et dbt dans le conteneur
-COPY dags/ /opt/airflow/dags/
+COPY --chown=airflow:root dags/ /opt/airflow/dags/
 # Si votre projet dbt local n’est pas nommé "dbt", modifiez cette ligne en conséquence
-COPY dbt/ /opt/airflow/dbt/
+# --chown : sans ça, COPY assigne les fichiers à root même si USER airflow est actif
+COPY --chown=airflow:root dbt/ /opt/airflow/dbt/
 
-# Étape 4 : Installer les dépendances Airflow additionnelles
+# Étape 4 : Pré-installer les packages dbt dans l’image
+# En K8s chaque pod a son propre filesystem — on ne peut pas partager un volume monté depuis l’hôte.
+# dbt deps télécharge les packages (packages.yml) sans avoir besoin de profiles.
+RUN cd /opt/airflow/dbt && dbt deps --no-use-colors
+
+# Étape 5 : Installer les dépendances Airflow additionnelles
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
