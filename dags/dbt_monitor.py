@@ -201,3 +201,85 @@ def send_pipeline_report(**context):
             )
 
     requests.post(webhook_url, json={"text": "\n".join(lines)}, timeout=10)
+
+
+def send_pipeline_report_from_bq(**context):
+    """Pour les DAGs chainés ex6_1→ex6_4 : lit les métriques depuis BigQuery car XCom n'est pas accessible cross-DAG."""
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        return
+
+    from collections import defaultdict
+
+    dag_id = context["dag"].dag_id
+    logical_date = context["logical_date"]
+
+    client = _get_bq_client()
+    table_id = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
+
+    query = f"""
+        WITH latest_runs AS (
+            SELECT step, MAX(inserted_at) AS latest_insert
+            FROM `{table_id}`
+            WHERE step IN ('staging', 'intermediate', 'mart')
+              AND inserted_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 24 HOUR)
+            GROUP BY step
+        )
+        SELECT t.step, t.model_name, t.status, t.execution_time_seconds, t.rows_affected
+        FROM `{table_id}` t
+        JOIN latest_runs lr ON t.step = lr.step AND t.inserted_at = lr.latest_insert
+        ORDER BY t.step, t.execution_time_seconds DESC
+    """
+    rows = list(client.query(query).result())
+
+    steps_models = defaultdict(list)
+    for row in rows:
+        steps_models[row.step].append(row)
+
+    summaries = []
+    for step in ["staging", "intermediate", "mart"]:
+        models = steps_models.get(step, [])
+        if not models:
+            continue
+        success_count = sum(1 for m in models if m.status in ("success", "pass"))
+        error_count = sum(1 for m in models if m.status == "error")
+        elapsed = round(sum(m.execution_time_seconds or 0 for m in models), 2)
+        summaries.append({
+            "step": step,
+            "total": len(models),
+            "success": success_count,
+            "error": error_count,
+            "elapsed_time": elapsed,
+            "models": [
+                {
+                    "name": m.model_name,
+                    "status": m.status,
+                    "execution_time": round(m.execution_time_seconds or 0, 2),
+                    "rows_affected": m.rows_affected,
+                }
+                for m in models
+            ],
+        })
+
+    total_elapsed = sum(s["elapsed_time"] for s in summaries)
+    total_models = sum(s["total"] for s in summaries)
+    total_success = sum(s["success"] for s in summaries)
+    total_errors = sum(s["error"] for s in summaries)
+
+    status_icon = ":white_check_mark:" if total_errors == 0 else ":warning:"
+    lines = [
+        f"{status_icon} *Rapport pipeline dbt — {dag_id}*",
+        f"Date: `{logical_date.strftime('%Y-%m-%d %H:%M')} UTC` | Duree totale: *{total_elapsed:.1f}s*",
+        f"Modeles: *{total_success}/{total_models}* reussis\n",
+    ]
+
+    for summary in summaries:
+        step = summary["step"].capitalize()
+        icon = ":white_check_mark:" if summary["error"] == 0 else ":red_circle:"
+        lines.append(f"{icon} *{step}* — {summary['elapsed_time']}s")
+        for model in summary["models"]:
+            status_emoji = ":x:" if model["status"] == "error" else ":clock1:"
+            rows_str = f", {model['rows_affected']} lignes" if model.get("rows_affected") else ""
+            lines.append(f"  {status_emoji} `{model['name']}` — {model['execution_time']}s{rows_str}")
+
+    requests.post(webhook_url, json={"text": "\n".join(lines)}, timeout=10)

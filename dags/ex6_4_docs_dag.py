@@ -3,7 +3,7 @@ from airflow.operators.bash import BashOperator
 from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
 
-from dbt_monitor import send_pipeline_report
+from dbt_monitor import send_pipeline_report_from_bq
 from slack_callbacks import on_failure_slack_alert
 
 default_args = {
@@ -33,7 +33,7 @@ with DAG(
 
     report_pipeline = PythonOperator(
         task_id='report_pipeline',
-        python_callable=send_pipeline_report,
+        python_callable=send_pipeline_report_from_bq,
         trigger_rule='all_done',
     )
 
