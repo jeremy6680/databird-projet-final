@@ -249,7 +249,7 @@ Les DAGs sont progressifs — chaque exercice introduit un nouveau concept.
 | `ex6_1_staging` | `@daily` | Staging seul ; déclenche automatiquement `ex6_2_intermediate` |
 | `ex6_2_intermediate` | Déclenché par ex6_1 | Intermediate seul ; déclenche `ex6_3_mart` |
 | `ex6_3_mart` | Déclenché par ex6_2 | Mart seul ; déclenche `ex6_4_docs` |
-| `ex6_4_docs` | Déclenché par ex6_3 | Génération de la documentation dbt |
+| `ex6_4_docs` | Déclenché par ex6_3 | Génération de la documentation dbt + rapport Slack final |
 | `ex6_full_dbt_pipeline` | `@daily` | Pipeline monolithique avec monitoring BigQuery et rapport Slack |
 
 ### Graphe d'exécution de `ex6_full_dbt_pipeline` (pipeline complet avec monitoring)
@@ -271,6 +271,26 @@ L'alternative modulaire découpe le pipeline en 4 DAGs indépendants enchaînés
 ```
 ex6_1_staging ──trigger──▶ ex6_2_intermediate ──trigger──▶ ex6_3_mart ──trigger──▶ ex6_4_docs
 ```
+
+Chaque DAG embarque le même pattern de monitoring que `ex6_full_dbt_pipeline` :
+
+```
+# ex6_1_staging
+run_staging → monitor_staging → test_staging → trigger_intermediate
+
+# ex6_2_intermediate
+run_intermediate → monitor_intermediate → test_intermediate → trigger_mart
+
+# ex6_3_mart
+run_mart → monitor_mart → test_mart → trigger_docs
+
+# ex6_4_docs
+generate_docs → report_pipeline
+```
+
+> `monitor_*` insère les métriques dbt dans BigQuery (`airflow_monitoring.dbt_run_metrics`).
+> `report_pipeline` envoie le rapport Slack final (`trigger_rule='all_done'`).
+> **Limite** : le `trigger_rule='all_done'` de `report_pipeline` ne couvre que les échecs internes à `ex6_4_docs` — les erreurs des DAGs précédents s'exécutent dans des DAG Runs séparés et ne sont pas visibles depuis `ex6_4_docs`.
 
 ---
 
@@ -353,7 +373,7 @@ Le dataset et la table sont créés automatiquement au premier run.
 Deux types de notifications Slack sont envoyés si la variable `SLACK_WEBHOOK_URL` est définie dans `.env` :
 
 - **Alerte d'échec** (`slack_callbacks.py`) : envoyée sur chaque tâche en erreur, avec le lien vers les logs Airflow.
-- **Rapport de fin de pipeline** (`send_pipeline_report` dans `dbt_monitor.py`) : envoyé à la fin de `ex6_full_dbt_pipeline`, résumant le statut, la durée totale et les métriques par couche.
+- **Rapport de fin de pipeline** (`send_pipeline_report` dans `dbt_monitor.py`) : envoyé à la fin de `ex6_full_dbt_pipeline` et de `ex6_4_docs`, résumant le statut, la durée totale et les métriques par couche.
 
 ---
 
