@@ -1,6 +1,6 @@
 # Projet Final — Pipeline dbt orchestré avec Airflow & BigQuery
 
-Pipeline de données complet qui transforme des données brutes d'une base de vélos en tables analytiques, en passant par 3 couches dbt (staging → intermediate → mart), le tout orchestré par Apache Airflow dans Docker et stocké dans Google BigQuery.
+Pipeline de données complet qui transforme des données brutes d'une base de vélos en tables analytiques, en passant par 3 couches dbt (staging → intermediate → mart), le tout orchestré par Apache Airflow en multi-conteneurs et stocké dans Google BigQuery.
 
 ---
 
@@ -27,11 +27,13 @@ Ce projet implémente un pipeline ELT (Extract → Load → **Transform**) :
 - **Source** : tables brutes d'une base de données vélos (`bike_database`) déjà chargées dans BigQuery
 - **Transformation** : dbt s'occupe de nettoyer, joindre et agréger les données en 3 couches
 - **Orchestration** : Apache Airflow planifie et enchaîne les étapes
-- **Infrastructure** : tout tourne dans un conteneur Docker
+- **Infrastructure** : architecture multi-conteneurs Docker Compose (6 services)
 
 ---
 
 ## Architecture
+
+### Pipeline de données
 
 ```
 Source BigQuery (bike_database)
@@ -58,13 +60,30 @@ Source BigQuery (bike_database)
 └─────────────────────────────────────────┘
 ```
 
+### Infrastructure Docker Compose (Airflow 3.x)
+
+```
+┌────────────────────────────────────────────────────────┐
+│  docker-compose.yml                                    │
+│                                                        │
+│  postgres          ← base de données Airflow           │
+│  airflow-init      ← setup unique (migration DB, user) │
+│  airflow-webserver ← UI React + API REST (port 8080)   │
+│  airflow-scheduler ← planifie et exécute les tâches    │
+│  airflow-triggerer ← gère les opérateurs asynchrones   │
+│  airflow-dag-processor ← parse les fichiers DAG        │
+└────────────────────────────────────────────────────────┘
+```
+
+> **Airflow 3.x** introduit le `dag-processor` comme service indépendant (séparé du scheduler) et remplace `airflow webserver` par `airflow api-server`.
+
 Chaque étape est orchestrée par un DAG Airflow qui exécute `dbt run` puis `dbt test` avant de passer à la couche suivante.
 
 ---
 
 ## Prérequis
 
-- [Docker](https://www.docker.com/get-started) installé et en cours d'exécution
+- [Docker Desktop](https://www.docker.com/get-started) installé et en cours d'exécution
 - Un projet Google Cloud avec BigQuery activé
 - Un compte de service GCP avec les droits BigQuery (`roles/bigquery.dataEditor` + `roles/bigquery.jobUser`)
 - La clé JSON du compte de service
@@ -90,51 +109,69 @@ dbt/.dbt_profiles/bigqueryKey.json
 
 ### 3. Vérifier le fichier `.env`
 
-Le fichier `.env` à la racine contient les variables pour Docker :
+Le fichier `.env` à la racine doit contenir :
 
 ```env
-AIRFLOW_UID=501
+AIRFLOW_UID=501          # UID local (vérifier avec : id -u)
 AIRFLOW_GID=0
+
+# Clé de chiffrement des connexions Airflow (ne pas changer après le premier démarrage)
+AIRFLOW__CORE__FERNET_KEY=<générer avec : python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+
+# Clé JWT partagée entre le scheduler et l'api-server
+# DOIT être identique sur tous les containers
+AIRFLOW__API_AUTH__JWT_SECRET=<générer avec : python3 -c "import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).rstrip(b'=').decode())">
+
+# Slack (optionnel)
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
+
+# SMTP (optionnel)
+AIRFLOW__SMTP__SMTP_HOST=...
 ```
 
-Adapter `AIRFLOW_UID` à votre UID local (`id -u` sur Mac/Linux).
+> **Important** : La `FERNET_KEY` et le `JWT_SECRET` doivent être générés **une seule fois** et rester stables. Les changer invalide les connexions chiffrées et les tokens en cours.
 
-### 4. Construire l'image Docker
+### 4. Construire les images et démarrer
 
 ```bash
-docker build -t dbt_pipeline .
+docker compose up --build -d
 ```
 
-Cette image embarque Airflow 3.1.7, Python 3.11, et `dbt-bigquery==1.7.5`.
+Cette commande :
+1. Construit l'image custom (Airflow 3.1.7 + dbt-bigquery + providers)
+2. Démarre PostgreSQL et attend qu'il soit prêt
+3. Lance `airflow-init` (migration DB + création de l'utilisateur admin)
+4. Démarre le webserver, scheduler, triggerer et dag-processor
 
-### 5. Démarrer le conteneur
+Le premier démarrage prend environ 2-3 minutes.
 
-```bash
-bash init_airflow.sh
-```
-
-Ou manuellement :
-
-```bash
-docker run -d --name airflow-standalone \
-  --env-file .env \
-  -p 8080:8080 \
-  -p 8081:8081 \
-  -v ./dags:/opt/airflow/dags \
-  -v ./dbt:/opt/airflow/dbt \
-  dbt_pipeline standalone
-```
-
-> Les volumes `-v` permettent de modifier les DAGs et les modèles dbt **sans reconstruire l'image**.
-
-### 6. Accéder à l'interface Airflow
+### 5. Accéder à l'interface Airflow
 
 Ouvrir [http://localhost:8080](http://localhost:8080)
 
-Les identifiants par défaut d'Airflow standalone sont affichés dans les logs au premier démarrage :
+```
+Identifiant : admin
+Mot de passe : admin
+```
+
+### 6. Commandes utiles
 
 ```bash
-docker logs airflow-standalone | grep "Login with username"
+# Voir l'état de tous les services
+docker compose ps
+
+# Voir les logs d'un service
+docker compose logs airflow-scheduler
+docker compose logs airflow-dag-processor
+
+# Arrêter tous les services (données conservées)
+docker compose down
+
+# Arrêter et supprimer la base de données PostgreSQL
+docker compose down -v
+
+# Redémarrer après une modification du .env ou du Dockerfile
+docker compose up --build -d
 ```
 
 ---
@@ -164,9 +201,10 @@ Les modèles dbt créeront automatiquement les datasets `stg_bike_database`, `in
 ```
 projet_final/
 ├── Dockerfile                  # Image Airflow + dbt-bigquery
-├── init_airflow.sh             # Script de démarrage Docker
+├── docker-compose.yml          # Orchestration multi-conteneurs (6 services)
 ├── requirements.txt            # Providers Airflow supplémentaires
-├── .env                        # Variables d'environnement Docker
+├── .env                        # Variables d'environnement (secrets, UID, SMTP)
+├── logs/                       # Logs Airflow (montés depuis les containers)
 │
 ├── dags/                       # DAGs Airflow (montés en volume)
 │   ├── slack_callbacks.py      # Callback d'alerte Slack sur échec de tâche
@@ -312,16 +350,10 @@ Le dataset et la table sont créés automatiquement au premier run.
 
 ### Alertes Slack
 
-Deux types de notifications Slack sont envoyés si la variable d'environnement `SLACK_WEBHOOK_URL` est définie :
+Deux types de notifications Slack sont envoyés si la variable `SLACK_WEBHOOK_URL` est définie dans `.env` :
 
 - **Alerte d'échec** (`slack_callbacks.py`) : envoyée sur chaque tâche en erreur, avec le lien vers les logs Airflow.
 - **Rapport de fin de pipeline** (`send_pipeline_report` dans `dbt_monitor.py`) : envoyé à la fin de `ex6_full_dbt_pipeline`, résumant le statut, la durée totale et les métriques par couche.
-
-Pour activer les notifications, ajouter dans `.env` :
-
-```env
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
-```
 
 ---
 
@@ -329,15 +361,15 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/xxx/yyy/zzz
 
 ### Via l'interface Airflow (recommandé)
 
-1. Ouvrir [http://localhost:8080](http://localhost:8080)
+1. Ouvrir [http://localhost:8080](http://localhost:8080) (`admin` / `admin`)
 2. Activer le DAG `ex6_full_dbt_pipeline`
 3. Cliquer sur **Trigger DAG** pour une exécution immédiate
 
-### En ligne de commande depuis le conteneur
+### En ligne de commande depuis un conteneur
 
 ```bash
-# Entrer dans le conteneur
-docker exec -it airflow-standalone bash
+# Entrer dans le scheduler (qui exécute les tâches)
+docker compose exec airflow-scheduler bash
 
 # Lancer manuellement le pipeline complet
 airflow dags trigger ex6_full_dbt_pipeline
@@ -348,13 +380,6 @@ dbt run --profiles-dir ./.dbt_profiles
 dbt test --profiles-dir ./.dbt_profiles
 ```
 
-### Arrêter et supprimer le conteneur
-
-```bash
-docker stop airflow-standalone
-docker rm airflow-standalone
-```
-
 ---
 
 ## Documentation dbt
@@ -362,15 +387,17 @@ docker rm airflow-standalone
 Pour consulter la documentation interactive des modèles :
 
 1. Déclencher le DAG `ex5_dbt_docs_pipeline` (ou `ex6_full_dbt_pipeline`)
-2. Depuis le conteneur, servir la doc :
+2. Depuis le scheduler, servir la doc :
 
 ```bash
-docker exec -it airflow-standalone bash
+docker compose exec airflow-scheduler bash
 cd /opt/airflow/dbt
 dbt docs serve --profiles-dir ./.dbt_profiles --port 8081
 ```
 
 3. Ouvrir [http://localhost:8081](http://localhost:8081)
+
+> Note : exposer le port 8081 depuis le scheduler nécessite d'ajouter `- "8081:8081"` sous `ports:` du service `airflow-scheduler` dans `docker-compose.yml`.
 
 ---
 
@@ -380,5 +407,15 @@ dbt docs serve --profiles-dir ./.dbt_profiles --port 8081
 - Les DAGs ex1 à ex5 sont en déclenchement **manuel** (`schedule=None`) — ils servent à valider chaque couche séparément.
 - `ex6_1_staging` est planifié `@daily` et déclenche en cascade `ex6_2` → `ex6_3` → `ex6_4` via `TriggerDagRunOperator`. Ne pas activer `ex6_1` et `ex6_full_dbt_pipeline` simultanément pour éviter de doubler les exécutions.
 - `ex6_full_dbt_pipeline` est planifié `@daily` avec `catchup=False` — il ne rattrapera pas les exécutions passées au premier démarrage.
-- Le module `dbt_monitor.py` nécessite que le package `google-cloud-bigquery` soit installé dans l'image Docker. Il est inclus dans `requirements.txt`.
 - La variable `SLACK_WEBHOOK_URL` est optionnelle — si absente, les fonctions de notification se terminent silencieusement sans erreur.
+
+### Spécificités Airflow 3.x
+
+| Changement | Airflow 2.x | Airflow 3.x |
+|---|---|---|
+| Commande UI | `airflow webserver` | `airflow api-server` |
+| Parse des DAGs | Intégré au scheduler | Service `dag-processor` séparé |
+| Auth utilisateurs | `airflow users create` (core) | Provider `apache-airflow-providers-fab` |
+| Exécution des tâches | Directe | Via Execution API (JWT) |
+| JWT signing key | Non requis | `AIRFLOW__API_AUTH__JWT_SECRET` (partagé entre containers) |
+| Execution API URL | Non requis | `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` |

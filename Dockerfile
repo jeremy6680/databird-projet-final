@@ -14,5 +14,4 @@ COPY dbt/ /opt/airflow/dbt/
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# CMD personnalisé
-CMD ["bash", "-c", "dbt deps --profiles-dir /home/airflow/.dbt && airflow standalone"]
+# La commande est définie par chaque service dans docker-compose.yml

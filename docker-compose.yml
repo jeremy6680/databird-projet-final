@@ -1,0 +1,198 @@
+# ─────────────────────────────────────────────────────────────
+# Bloc réutilisable : tout ce qui est commun aux services Airflow
+# ─────────────────────────────────────────────────────────────
+x-airflow-common:
+  &airflow-common
+  build: .
+  env_file:
+    - .env
+  environment:
+    &airflow-common-env
+    # Executor local = les tâches tournent dans le scheduler, pas dans des workers séparés
+    # C'est la configuration standard pour un projet mono-machine
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+
+    # Connexion à PostgreSQL (le nom "postgres" est résolu par le réseau Docker Compose)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+
+    # Clé de chiffrement pour les mots de passe stockés dans la DB
+    # IMPORTANT : à changer si tu mets ce projet en production
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+
+    # Utiliser le gestionnaire d'auth FAB (provider séparé depuis Airflow 3.x)
+    # Permet l'usage de `airflow users create` et la gestion des rôles
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+
+    # Ne pas charger les DAGs d'exemple fournis par Airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+
+    # Les DAGs sont mis en pause à la création (il faut les activer manuellement)
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+
+    # Active le health check du scheduler (utilisé par Docker pour savoir s'il est "vivant")
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+
+    # URL de l'api-server vue depuis les autres containers (scheduler, dag-processor, triggerer)
+    # Par défaut c'est "localhost:8080" — ce qui fonctionne en standalone mais pas en multi-container
+    # En Docker Compose, le nom de service "airflow-webserver" est résolu par le DNS interne
+    AIRFLOW__CORE__INTERNAL_API_URL: http://airflow-webserver:8080
+
+    # URL de l'Execution API utilisée par le LocalExecutor quand il démarre une tâche
+    # Sans ça, LocalExecutor construit "http://localhost:8080/execution/" — introuvable dans le
+    # container scheduler puisque l'api-server est un container séparé (airflow-webserver)
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
+
+  volumes:
+    - ./dags:/opt/airflow/dags        # Dossier DAGs monté depuis la machine hôte
+    - ./dbt:/opt/airflow/dbt          # Projet dbt monté depuis la machine hôte
+    - ./logs:/opt/airflow/logs        # Logs Airflow persistés sur la machine hôte
+
+  # L'utilisateur défini dans .env (AIRFLOW_UID:AIRFLOW_GID)
+  user: "${AIRFLOW_UID:-50000}:0"
+
+  # Tous les services Airflow attendent que PostgreSQL soit prêt
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+
+# ─────────────────────────────────────────────────────────────
+# Services
+# ─────────────────────────────────────────────────────────────
+services:
+
+  # ── 1. Base de données PostgreSQL ──────────────────────────
+  # Remplace SQLite utilisé par "airflow standalone"
+  # PostgreSQL supporte les connexions concurrentes → tâches en parallèle
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+
+  # ── 2. Initialisation (tourne UNE seule fois au démarrage) ─
+  # Ce service : migre la DB, crée l'utilisateur admin, installe les packages dbt
+  # Il s'arrête quand il a fini (service_completed_successfully)
+  airflow-init:
+    <<: *airflow-common
+    # Pas d'override d'entrypoint : on laisse l'image utiliser son propre entrypoint
+    # (/usr/bin/dumb-init -> /entrypoint) qui active le virtualenv Python correctement
+    command:
+      - bash
+      - -c
+      - |
+        echo "==> Migration de la base de données Airflow..."
+        airflow db migrate
+
+        echo "==> Création de l'utilisateur admin..."
+        airflow users create \
+          --username admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password admin 2>/dev/null || echo "L'utilisateur admin existe déjà."
+
+        echo "==> Installation des packages dbt..."
+        cd /opt/airflow/dbt && dbt deps --profiles-dir ./.dbt_profiles
+
+        echo "==> Initialisation terminée."
+    environment:
+      <<: *airflow-common-env
+    restart: on-failure
+
+
+  # ── 3. Interface web (UI Airflow) ──────────────────────────
+  # En Airflow 3.x, "webserver" est remplacé par "api-server"
+  # Il sert à la fois l'UI React et l'API REST sur le même port 8080
+  airflow-webserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ── 4. Scheduler ───────────────────────────────────────────
+  # Analyse les DAGs, planifie les tâches, et les exécute (LocalExecutor)
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ── 5. Dag Processor ──────────────────────────────────────
+  # NOUVEAU en Airflow 3.x : parse les fichiers Python des DAGs et les
+  # enregistre en base. En Airflow 2.x, c'était le scheduler qui faisait ça.
+  # Sans ce service, aucun DAG n'apparaît dans l'UI.
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  # ── 6. Triggerer ───────────────────────────────────────────
+  # Gère les "Deferrable Operators" (tâches asynchrones qui n'occupent pas un worker)
+  # Exemple : attendre qu'un fichier apparaisse dans GCS sans bloquer
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+
+# ─────────────────────────────────────────────────────────────
+# Volumes nommés Docker (données persistées entre les restarts)
+# ─────────────────────────────────────────────────────────────
+volumes:
+  postgres-db-volume:
