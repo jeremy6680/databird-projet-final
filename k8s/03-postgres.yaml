@@ -1,0 +1,89 @@
+# ─────────────────────────────────────────────────────────────
+# 1/3 — PersistentVolumeClaim
+# Équivalent de : volumes: postgres-db-volume: dans docker-compose
+# K8s alloue 5Gi de disque persistant. Les données survivent aux redémarrages du pod.
+# ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: airflow
+spec:
+  accessModes:
+    - ReadWriteOnce    # Un seul pod peut lire+écrire à la fois (normal pour une DB)
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ─────────────────────────────────────────────────────────────
+# 2/3 — Deployment
+# Équivalent du service "postgres:" dans docker-compose
+# Un Deployment garantit qu'il y a toujours 1 replica du pod en vie
+# ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: airflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres        # Le Deployment gère les pods qui ont ce label
+  template:
+    metadata:
+      labels:
+        app: postgres      # Ce label est mis sur chaque pod créé
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - name: POSTGRES_USER
+              value: "airflow"
+            - name: POSTGRES_PASSWORD
+              value: "airflow"
+            - name: POSTGRES_DB
+              value: "airflow"
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data   # Où postgres stocke ses données
+          # Healthcheck : K8s attend que postgres soit prêt avant d'envoyer du trafic
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "airflow"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "airflow"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc   # Branche le PVC qu'on vient de déclarer
+
+---
+# ─────────────────────────────────────────────────────────────
+# 3/3 — Service
+# C'est ce qui donne un nom DNS stable à postgres dans le cluster.
+# Sans Service, le pod postgres a une IP qui change à chaque redémarrage.
+# Avec Service, les autres pods peuvent toujours l'atteindre via "postgres-svc".
+# Équivalent du réseau interne docker-compose (où "postgres" est résolu automatiquement)
+# ─────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-svc      # C'est le nom utilisé dans AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+  namespace: airflow
+spec:
+  selector:
+    app: postgres          # Envoie le trafic aux pods ayant ce label
+  ports:
+    - port: 5432
+      targetPort: 5432
+  type: ClusterIP          # Accessible uniquement depuis l'intérieur du cluster (pas depuis l'extérieur)

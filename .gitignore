@@ -44,6 +44,9 @@ webserver_config.py
 # ── Docker ────────────────────────────────────────────────────────────────────
 docker-compose.override.yml
 
+# ── Kubernetes secrets (contient de vraies clés) ─────────────────────────────
+k8s/02-secret.yaml
+
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

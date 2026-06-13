@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: airflow
+data:
+  # Executor : les tâches sont exécutées dans le même process que le scheduler
+  AIRFLOW__CORE__EXECUTOR: "LocalExecutor"
+
+  # Connexion PostgreSQL — "postgres-svc" est le nom du Service K8s qu'on créera
+  # C'est l'équivalent de "postgres" dans docker-compose (résolution DNS interne)
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: "postgresql+psycopg2://airflow:airflow@postgres-svc/airflow"
+
+  # Provider d'authentification (FAB = Flask App Builder, séparé depuis Airflow 3.x)
+  AIRFLOW__CORE__AUTH_MANAGER: "airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager"
+
+  # Ne pas charger les DAGs d'exemple Airflow
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+
+  # Les DAGs démarrent en pause (à activer manuellement dans l'UI)
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+
+  # Active le health check du scheduler (utilisé par les probes K8s)
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+
+  # URL interne de l'api-server — "airflow-webserver-svc" sera notre Service K8s
+  # C'est l'équivalent de "airflow-webserver" dans docker-compose
+  AIRFLOW__CORE__INTERNAL_API_URL: "http://airflow-webserver-svc:8080"
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: "http://airflow-webserver-svc:8080/execution/"
+
+  # SMTP (non-sensible)
+  AIRFLOW__SMTP__SMTP_HOST: "smtp.resend.com"
+  AIRFLOW__SMTP__SMTP_STARTTLS: "True"
+  AIRFLOW__SMTP__SMTP_SSL: "False"
+  AIRFLOW__SMTP__SMTP_PORT: "587"
+  AIRFLOW__SMTP__SMTP_USER: "noreply@rugbydraft.app"
+  AIRFLOW__SMTP__SMTP_MAIL_FROM: "noreply@rugbydraft.app"
