@@ -1,6 +1,9 @@
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 from datetime import datetime, timedelta
+
+from dbt_monitor import send_pipeline_report
 from slack_callbacks import on_failure_slack_alert
 
 default_args = {
@@ -28,4 +31,10 @@ with DAG(
         bash_command='cd /opt/airflow/dbt && dbt docs generate --profiles-dir ./.dbt_profiles',
     )
 
-    generate_docs
+    report_pipeline = PythonOperator(
+        task_id='report_pipeline',
+        python_callable=send_pipeline_report,
+        trigger_rule='all_done',
+    )
+
+    generate_docs >> report_pipeline

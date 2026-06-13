@@ -1,7 +1,12 @@
+from functools import partial
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
+from airflow.operators.python import PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from datetime import datetime, timedelta
+
+from dbt_monitor import capture_run_results
 from slack_callbacks import on_failure_slack_alert
 
 default_args = {
@@ -29,6 +34,11 @@ with DAG(
         bash_command='cd /opt/airflow/dbt && dbt run --select mart.operations --profiles-dir ./.dbt_profiles',
     )
 
+    monitor_mart = PythonOperator(
+        task_id='monitor_mart',
+        python_callable=partial(capture_run_results, "mart"),
+    )
+
     test_mart = BashOperator(
         task_id='test_mart',
         bash_command='cd /opt/airflow/dbt && dbt test --select mart.operations --profiles-dir ./.dbt_profiles',
@@ -40,4 +50,4 @@ with DAG(
         wait_for_completion=False,
     )
 
-    run_mart >> test_mart >> trigger_docs
+    run_mart >> monitor_mart >> test_mart >> trigger_docs
