@@ -30,6 +30,8 @@ Ce projet implémente un pipeline ELT (Extract → Load → **Transform**) :
 - **Orchestration** : Apache Airflow planifie et enchaîne les étapes
 - **Infrastructure** : architecture multi-conteneurs Docker Compose (6 services)
 
+> **Périmètre de l'exercice** : L'objectif principal était la **création de la pipeline et l'orchestration Airflow**. Les modèles dbt (couches staging, intermediate et mart) sont issus du dépôt de correction [`Carolinemestre/correction_projet_final`](https://github.com/Carolinemestre/correction_projet_final) et ont été intégrés tels quels via `git clone`. Le travail réalisé ici porte sur les DAGs Airflow, l'infrastructure Docker/Kubernetes, le module de monitoring et les alertes Slack.
+
 ---
 
 ## Architecture
