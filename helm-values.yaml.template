@@ -1,0 +1,98 @@
+# ============================================================
+# Helm values pour Apache Airflow sur Hetzner (k3s)
+# Chart : apache-airflow/airflow 1.22.0 (Airflow 3.x)
+# ============================================================
+#
+# AVANT de lancer helm install, créer le namespace et le secret BigQuery
+# depuis un terminal Mac (kubectl pointant sur le contexte "hetzner") :
+#
+#   kubectl create namespace airflow
+#
+#   kubectl create secret generic gcp-credentials \
+#     --from-file=bigqueryKey.json=./dbt/.dbt_profiles/bigqueryKey.json \
+#     -n airflow
+#
+# DÉPLOIEMENT :
+#   Copier ce fichier en helm-values.yaml, remplir les clés, puis :
+#
+#   helm install airflow apache-airflow/airflow \
+#     -n airflow \
+#     -f helm-values.yaml \
+#     --timeout 10m
+#
+# MISE À JOUR (après modification de helm-values.yaml ou rebuild de l'image) :
+#   helm upgrade airflow apache-airflow/airflow \
+#     -n airflow \
+#     -f helm-values.yaml \
+#     --timeout 10m
+#
+# ACCÈS à l'interface Airflow (port-forward depuis Mac) :
+#   kubectl port-forward svc/airflow-webserver -n airflow 8080:8080
+#   → http://localhost:8080  (admin / admin)
+# ============================================================
+
+# --- Image Docker personnalisée ---
+# Contient : Airflow 3.1.7 + dbt-bigquery + providers + DAGs + dbt models
+images:
+  airflow:
+    repository: jeremy6680/airflow-projet
+    tag: latest
+    pullPolicy: Always
+
+# --- Exécuteur ---
+# LocalExecutor : toutes les tâches tournent dans le pod scheduler.
+# Simple, adapté à un cluster mono-nœud.
+executor: LocalExecutor
+
+# --- Clés secrètes Airflow ---
+#
+# fernetKey — chiffre les connexions (mots de passe) stockées dans Airflow.
+#   Générer depuis n'importe quel terminal Mac ou serveur avec Python 3 :
+#   python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#   ⚠️  Ne jamais changer après le premier déploiement : les connexions existantes
+#       deviendraient illisibles.
+fernetKey: "FERNET_KEY"
+
+# webserverSecretKey — signe les sessions Flask du webserver Airflow.
+#   Générer depuis n'importe quel terminal Mac ou serveur avec Python 3 :
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+#   Peut être changé sans conséquence (déconnecte juste les sessions actives).
+webserverSecretKey: "WEBSERVER_SECRET_KEY"
+
+# --- Configuration Airflow ---
+config:
+  core:
+    load_examples: "false"
+
+# --- Base de données PostgreSQL intégrée ---
+# Le chart déploie son propre PostgreSQL dans le cluster.
+# Pas besoin de gérer une DB externe.
+postgresql:
+  enabled: true
+
+# --- Compte administrateur ---
+defaultAirflowUsername: admin
+defaultAirflowPassword: admin
+defaultAirflowEmail: admin@example.com
+defaultAirflowFirstName: Admin
+defaultAirflowLastName: User
+
+# --- DAGs : dans l'image (pas de gitSync) ---
+# Les DAGs sont copiés dans l'image via le Dockerfile (COPY dags/).
+# On désactive la synchronisation Git qui n'est pas nécessaire ici.
+dags:
+  gitSync:
+    enabled: false
+
+# --- Credentials BigQuery montés comme fichier ---
+# Le Secret K8s "gcp-credentials" contient bigqueryKey.json.
+# Il est monté dans tous les pods au chemin attendu par dbt/profiles.yml.
+extraVolumes:
+  - name: gcp-credentials
+    secret:
+      secretName: gcp-credentials
+
+extraVolumeMounts:
+  - name: gcp-credentials
+    mountPath: /opt/airflow/dbt/.dbt_profiles
+    readOnly: true

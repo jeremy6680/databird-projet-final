@@ -46,6 +46,7 @@ docker-compose.override.yml
 
 # ── Kubernetes secrets (contient de vraies clés) ─────────────────────────────
 k8s/02-secret.yaml
+helm-values.yaml
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
