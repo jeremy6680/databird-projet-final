@@ -42,8 +42,12 @@ x-airflow-common:
     # container scheduler puisque l'api-server est un container séparé (airflow-webserver)
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-webserver:8080/execution/
 
+    # include/ est sur PYTHONPATH pour que les DAGs importent slack_callbacks, dbt_monitor, etc.
+    PYTHONPATH: /opt/airflow/include
+
   volumes:
     - ./dags:/opt/airflow/dags        # Dossier DAGs monté depuis la machine hôte
+    - ./include:/opt/airflow/include  # Utilitaires partagés (callbacks, helpers)
     - ./dbt:/opt/airflow/dbt          # Projet dbt monté depuis la machine hôte
     - ./logs:/opt/airflow/logs        # Logs Airflow persistés sur la machine hôte
 

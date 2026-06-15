@@ -518,6 +518,10 @@ projet_final/
 ├── .env                        # Variables d'environnement (secrets, UID, SMTP)
 ├── logs/                       # Logs Airflow (montés depuis les containers)
 │
+├── include/                    # Utilitaires partagés entre DAGs (sur PYTHONPATH)
+│   ├── slack_callbacks.py      # Callback d'alerte Slack sur échec de tâche
+│   └── dbt_monitor.py          # Monitoring : parsing artefacts dbt + écriture BigQuery
+│
 ├── k8s/                        # Manifests Kubernetes
 │   ├── 00-namespace.yaml       # Namespace "airflow"
 │   ├── 01-configmap.yaml       # Variables d'env non-sensibles
@@ -530,9 +534,7 @@ projet_final/
 │   ├── 07-airflow-dag-processor.yaml # Deployment dag-processor
 │   └── 08-airflow-triggerer.yaml    # Deployment triggerer
 │
-├── dags/                       # DAGs Airflow (montés en volume)
-│   ├── slack_callbacks.py      # Callback d'alerte Slack sur échec de tâche
-│   ├── dbt_monitor.py          # Module de monitoring : parsing artefacts dbt + BigQuery
+├── dags/                       # DAGs Airflow uniquement (montés en volume)
 │   ├── ex1_test_dag.py         # Exercice 1 : run/test table par table (staging)
 │   ├── ex2_dag.py              # Exercice 2 : run/test couche staging complète
 │   ├── ex3_dag.py              # Exercice 3 : run/test couche intermediate
@@ -696,8 +698,8 @@ Le dataset et la table sont créés automatiquement au premier run.
 
 Deux types de notifications Slack sont envoyés si la variable `SLACK_WEBHOOK_URL` est définie dans `.env` :
 
-- **Alerte d'échec** (`slack_callbacks.py`) : envoyée sur chaque tâche en erreur, avec le lien vers les logs Airflow.
-- **Rapport de fin de pipeline** (`send_pipeline_report` dans `dbt_monitor.py`) : envoyé à la fin de `ex6_full_dbt_pipeline` et de `ex6_4_docs`, résumant le statut, la durée totale et les métriques par couche.
+- **Alerte d'échec** (`include/slack_callbacks.py`) : envoyée sur chaque tâche en erreur, avec le lien vers les logs Airflow.
+- **Rapport de fin de pipeline** (`send_pipeline_report` dans `include/dbt_monitor.py`) : envoyé à la fin de `ex6_full_dbt_pipeline` et de `ex6_4_docs`, résumant le statut, la durée totale et les métriques par couche.
 
 ---
 
