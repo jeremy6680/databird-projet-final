@@ -317,7 +317,7 @@ minikube stop && minikube start
 
 Le même projet est aussi déployé en production sur un VPS Hetzner Cloud (ARM64) sous **k3s**, via le chart Helm officiel `apache-airflow/airflow` (v1.22.0, Airflow 3.2.2). Image custom poussée sur Docker Hub, secrets gérés via `kubectl create secret` + `helm-values.yaml` (non versionné).
 
-Le runbook complet (installation k3s, configuration kubeconfig, secrets, commandes Helm, troubleshooting) est gardé dans une doc interne plutôt que dans ce README — c'est un guide opérationnel, pas une présentation du projet.
+Le runbook complet (installation k3s, configuration kubeconfig, secrets, commandes Helm, troubleshooting) est dans [RUNBOOK_HETZNER.md](RUNBOOK_HETZNER.md) plutôt que dans ce README — c'est un guide opérationnel, pas une présentation du projet.
 
 > Bascule entre environnements : `kubectl config use-context hetzner` / `minikube`.
 
