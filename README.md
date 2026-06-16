@@ -315,161 +315,11 @@ minikube stop && minikube start
 
 ### 5b. Production — Hetzner + Helm
 
-Déploiement sur un VPS Hetzner (ARM64) via **k3s** + le chart Helm officiel Apache Airflow. C'est le déploiement production : persistant, toujours actif, accessible via IP publique.
+Le même projet est aussi déployé en production sur un VPS Hetzner Cloud (ARM64) sous **k3s**, via le chart Helm officiel `apache-airflow/airflow` (v1.22.0, Airflow 3.2.2). Image custom poussée sur Docker Hub, secrets gérés via `kubectl create secret` + `helm-values.yaml` (non versionné).
 
-#### Infrastructure
+Le runbook complet (installation k3s, configuration kubeconfig, secrets, commandes Helm, troubleshooting) est gardé dans une doc interne plutôt que dans ce README — c'est un guide opérationnel, pas une présentation du projet.
 
-- **Serveur** : VPS Hetzner Cloud ARM64 (CAX series), IP publique `91.98.66.197`
-- **Kubernetes** : k3s v1.35 (distribution légère, installée en 1 commande)
-- **Ingress** : Traefik (inclus dans k3s)
-- **Chart** : `apache-airflow/airflow` v1.22.0 (Airflow 3.2.2)
-- **Image** : `jeremy6680/airflow-projet:latest` (Docker Hub)
-
-#### Prérequis
-
-- `kubectl` installé sur le Mac (`brew install kubectl`)
-- `helm` installé sur le Mac (`brew install helm`)
-- Un compte Docker Hub
-- Le fichier `dbt/.dbt_profiles/bigqueryKey.json` présent localement
-
-#### 1. Installer k3s sur le VPS Hetzner
-
-Depuis un terminal SSH sur le serveur :
-
-```bash
-curl -sfL https://get.k3s.io | sh -
-kubectl get nodes   # → STATUS: Ready
-```
-
-#### 2. Connecter kubectl (Mac → Hetzner)
-
-Depuis le serveur, récupérer le kubeconfig et l'IP publique :
-
-```bash
-cat /etc/rancher/k3s/k3s.yaml
-curl -s -4 ifconfig.me   # → IP publique IPv4
-```
-
-Sur le Mac, créer `~/.kube/hetzner.yaml` avec le contenu du kubeconfig en remplaçant `127.0.0.1` par l'IP publique, et toutes les occurrences de `default` par `hetzner`. Puis fusionner :
-
-```bash
-KUBECONFIG=~/.kube/config:~/.kube/hetzner.yaml kubectl config view --flatten > /tmp/kube_merged \
-  && mv /tmp/kube_merged ~/.kube/config && chmod 600 ~/.kube/config
-
-kubectl config use-context hetzner
-kubectl get nodes   # → doit afficher le nœud Hetzner depuis le Mac
-```
-
-#### 3. Publier l'image Docker sur Docker Hub
-
-Sur le Mac (Apple Silicon = même architecture ARM64 que le serveur) :
-
-```bash
-docker login -u <docker-username>
-docker build -t <docker-username>/airflow-projet:latest .
-docker push <docker-username>/airflow-projet:latest
-```
-
-#### 4. Créer les secrets Kubernetes
-
-```bash
-kubectl create namespace airflow
-
-# Credentials BigQuery (montés comme fichier dans les pods)
-kubectl create secret generic gcp-credentials \
-  --from-file=bigqueryKey.json=./dbt/.dbt_profiles/bigqueryKey.json \
-  -n airflow
-```
-
-#### 5. Configurer et déployer avec Helm
-
-Copier le template et remplir les clés :
-
-```bash
-cp helm-values.yaml.template helm-values.yaml
-# Éditer helm-values.yaml avec les vraies clés (voir les commandes de génération dans le template)
-```
-
-> `helm-values.yaml` est dans `.gitignore` — ne jamais le committer.
-
-Déployer :
-
-```bash
-helm repo add apache-airflow https://airflow.apache.org
-helm repo update
-
-helm upgrade --install airflow apache-airflow/airflow \
-  -n airflow \
-  -f helm-values.yaml \
-  --timeout 10m
-```
-
-#### 6. Vérifier le déploiement
-
-```bash
-kubectl get pods -n airflow
-# Résultat attendu : tous les pods en Running/Completed
-```
-
-| Pod | Conteneurs | Rôle |
-|-----|-----------|------|
-| `airflow-api-server-*` | 1/1 | UI React + API REST (port 8080) |
-| `airflow-scheduler-0` | 2/2 | Planification + log-groomer |
-| `airflow-dag-processor-*` | 2/2 | Parse les fichiers DAG |
-| `airflow-triggerer-0` | 2/2 | Opérateurs asynchrones |
-| `airflow-postgresql-0` | 1/1 | Base de données Airflow |
-| `airflow-statsd-*` | 1/1 | Métriques |
-| `airflow-run-airflow-migrations-*` | 0/1 | Job one-shot (migrations DB) |
-| `airflow-create-user-*` | 0/1 | Job one-shot (création admin) |
-
-#### 7. Accéder à l'interface (port-forward temporaire)
-
-```bash
-kubectl port-forward svc/airflow-api-server -n airflow 8080:8080
-```
-
-Ouvrir [http://localhost:8080](http://localhost:8080) — login `admin` / `admin`.
-
-> Pour un accès public permanent via URL, voir la section Ingress (à venir).
-
-#### Mise à jour après modification
-
-Après un rebuild de l'image ou un changement de `helm-values.yaml` :
-
-```bash
-# Rebuilder et pousser l'image
-docker build -t <docker-username>/airflow-projet:latest .
-docker push <docker-username>/airflow-projet:latest
-
-# Forcer le rechargement de l'image dans le cluster
-kubectl rollout restart deployment -n airflow
-
-# Ou mettre à jour la config Helm
-helm upgrade airflow apache-airflow/airflow -n airflow -f helm-values.yaml --timeout 10m
-```
-
-#### Commandes utiles (Hetzner)
-
-```bash
-# État des pods
-kubectl get pods -n airflow
-
-# Logs d'un composant
-kubectl logs -n airflow -l component=scheduler --tail=50
-kubectl logs -n airflow -l component=dag-processor --tail=50
-
-# Décrire un pod (events, probe failures, erreurs de démarrage)
-kubectl describe pod -n airflow <nom-du-pod>
-
-# Shell interactif dans un pod
-kubectl exec -it -n airflow deployment/airflow-dag-processor -- bash
-
-# Voir les releases Helm déployées
-helm list -n airflow
-
-# Supprimer le déploiement (sans supprimer les données PostgreSQL)
-helm uninstall airflow -n airflow
-```
+> Bascule entre environnements : `kubectl config use-context hetzner` / `minikube`.
 
 ---
 
@@ -578,27 +428,15 @@ Les DAGs sont progressifs — chaque exercice introduit un nouveau concept.
 | `ex6_4_docs` | Déclenché par ex6_3 | Génération de la documentation dbt + rapport Slack final |
 | `ex6_full_dbt_pipeline` | `@daily` | Pipeline monolithique avec monitoring BigQuery et rapport Slack |
 
-### Graphe d'exécution de `ex6_full_dbt_pipeline` (pipeline complet avec monitoring)
-
-```
-run_staging → monitor_staging → test_staging
-    → run_intermediate → monitor_intermediate → test_intermediate
-    → run_mart → monitor_mart → test_mart
-    → generate_docs → report_pipeline
-```
-
-> `monitor_*` : lit `dbt/target/run_results.json` après chaque `dbt run` et insère les métriques dans BigQuery.
-> `report_pipeline` : agrège les résultats XCom de chaque étape et envoie un rapport Slack. S'exécute même en cas d'échec partiel (`trigger_rule='all_done'`).
-
 ### DAGs chaînés ex6_1 → ex6_4
 
-L'alternative modulaire découpe le pipeline en 4 DAGs indépendants enchaînés via `TriggerDagRunOperator`. Chaque DAG peut être déclenché ou rejoué séparément.
+`ex6_full_dbt_pipeline` exécute tout le pipeline dans un seul DAG monolithique. `ex6_1` → `ex6_4` découpent ce même pipeline en 4 DAGs indépendants enchaînés via `TriggerDagRunOperator`, chacun pouvant être déclenché ou rejoué séparément :
 
 ```
 ex6_1_staging ──trigger──▶ ex6_2_intermediate ──trigger──▶ ex6_3_mart ──trigger──▶ ex6_4_docs
 ```
 
-Chaque DAG embarque le même pattern de monitoring que `ex6_full_dbt_pipeline` :
+Chaque DAG suit le même pattern run → monitor → test :
 
 ```
 # ex6_1_staging
@@ -622,43 +460,13 @@ generate_docs → report_pipeline
 
 ## Les modèles dbt
 
-### Staging (`stg_bike_database__*`)
+Issus du dépôt de correction (voir [Vue d'ensemble](#vue-densemble)), organisés en 3 couches :
 
-Nettoyage minimal des données brutes : renommage de colonnes, cast de types, gestion des valeurs nulles.
-
-| Modèle | Table source |
-|--------|-------------|
-| `stg_bike_database__brands` | `bike_database.brands` |
-| `stg_bike_database__categories` | `bike_database.categories` |
-| `stg_bike_database__customers` | `bike_database.customers` |
-| `stg_bike_database__order_items` | `bike_database.order_items` |
-| `stg_bike_database__orders` | `bike_database.orders` |
-| `stg_bike_database__products` | `bike_database.products` |
-| `stg_bike_database__staffs` | `bike_database.staffs` |
-| `stg_bike_database__stocks` | `bike_database.stocks` |
-| `stg_bike_database__stores` | `bike_database.stores` |
-
-### Intermediate (`int_bike_database__*`)
-
-Jointures et calculs intermédiaires à partir du staging.
-
-| Modèle | Description |
-|--------|-------------|
-| `int_bike_database__orders` | Commandes enrichies avec montants et localisation client |
-| `int_bike_database__order_items` | Lignes de commande avec montant total par ligne |
-| `int_bike_database__products` | Produits avec catégorie et marque |
-| `int_bike_database__stocks` | Stocks avec informations produit et magasin |
-
-### Mart (`mrt_operations__*`)
-
-Tables finales matérialisées en **tables** BigQuery (les autres couches sont des vues).
-
-| Modèle | Description |
-|--------|-------------|
-| `mrt_operations__customers_order_summary` | Résumé par client : nb commandes, montant total, durée de vie |
-| `mrt_operations__daily_order_performance` | Performance des commandes par jour |
-| `mrt_operations__product_performance` | Performance des produits |
-| `mrt_operations__store_product_stock_summary` | Stocks par magasin et produit |
+| Couche | Préfixe | Matérialisation | Rôle | Nb modèles |
+|--------|---------|------------------|------|-----------|
+| Staging | `stg_bike_database__*` | Vue | Renommage, cast, nettoyage des 9 tables sources brutes | 9 |
+| Intermediate | `int_bike_database__*` | Vue | Jointures et calculs métier (commandes, produits, stocks) | 4 |
+| Mart | `mrt_operations__*` | Table | Tables analytiques finales (résumé client, performance produit/magasin) | 4 |
 
 ---
 
@@ -754,14 +562,3 @@ dbt docs serve --profiles-dir ./.dbt_profiles --port 8081
 - `ex6_1_staging` est planifié `@daily` et déclenche en cascade `ex6_2` → `ex6_3` → `ex6_4` via `TriggerDagRunOperator`. Ne pas activer `ex6_1` et `ex6_full_dbt_pipeline` simultanément pour éviter de doubler les exécutions.
 - `ex6_full_dbt_pipeline` est planifié `@daily` avec `catchup=False` — il ne rattrapera pas les exécutions passées au premier démarrage.
 - La variable `SLACK_WEBHOOK_URL` est optionnelle — si absente, les fonctions de notification se terminent silencieusement sans erreur.
-
-### Spécificités Airflow 3.x
-
-| Changement | Airflow 2.x | Airflow 3.x |
-|---|---|---|
-| Commande UI | `airflow webserver` | `airflow api-server` |
-| Parse des DAGs | Intégré au scheduler | Service `dag-processor` séparé |
-| Auth utilisateurs | `airflow users create` (core) | Provider `apache-airflow-providers-fab` |
-| Exécution des tâches | Directe | Via Execution API (JWT) |
-| JWT signing key | Non requis | `AIRFLOW__API_AUTH__JWT_SECRET` (partagé entre containers) |
-| Execution API URL | Non requis | `AIRFLOW__CORE__EXECUTION_API_SERVER_URL` |
